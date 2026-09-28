@@ -9,12 +9,12 @@ import type { HarnessId } from "../features/sessions/model/session";
  * and Segmented styling so the section can be lifted in as-is.
  */
 
-type Range = "7d" | "30d" | "90d";
+type Range = "7d" | "30d";
 type Metric = "cost" | "tokens";
 type Breakdown = "model" | "project" | "account";
 
 const ALL_ACCOUNTS = "all";
-const RANGE_DAYS: Record<Range, number> = { "7d": 7, "30d": 30, "90d": 90 };
+const RANGE_DAYS: Record<Range, number> = { "7d": 7, "30d": 30 };
 
 type MockAccount = {
   id: string;
@@ -382,7 +382,6 @@ function UsageSection() {
             options={[
               { value: "7d", label: "7 days" },
               { value: "30d", label: "30 days" },
-              { value: "90d", label: "90 days" },
             ]}
             onChange={setRange}
           />
@@ -522,9 +521,7 @@ function DailyBars({ days, metric }: { days: Day[]; metric: Metric }) {
           ))}
         </div>
         <div
-          className={`relative flex h-28 items-end ${
-            days.length > 45 ? "gap-px" : "gap-[3px]"
-          }`}
+          className="relative flex h-28 items-end gap-[3px]"
           onMouseLeave={() => setHover(null)}
         >
           {days.map((day, index) => {
