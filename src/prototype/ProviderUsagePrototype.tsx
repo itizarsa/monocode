@@ -9,9 +9,12 @@ import type { HarnessId } from "../features/sessions/model/session";
  * and Segmented styling so the section can be lifted in as-is.
  */
 
-type Range = "7d" | "30d";
+type Range = "7d" | "30d" | "90d";
 type Metric = "cost" | "tokens";
-type Breakdown = "model" | "project";
+type Breakdown = "model" | "project" | "account";
+
+const ALL_ACCOUNTS = "all";
+const RANGE_DAYS: Record<Range, number> = { "7d": 7, "30d": 30, "90d": 90 };
 
 type MockAccount = {
   id: string;
@@ -86,7 +89,7 @@ function random(seed: number) {
 }
 
 function mockDays(account: MockAccount, range: Range): Day[] {
-  const count = range === "7d" ? 7 : 30;
+  const count = RANGE_DAYS[range];
   const next = random(account.seed);
   const today = new Date(2026, 8, 28);
   const blendedRate =
@@ -249,14 +252,52 @@ function AccountsMock() {
 }
 
 function UsageSection() {
-  const [accountId, setAccountId] = useState(ACCOUNTS[0].id);
+  const [accountId, setAccountId] = useState<string>(ALL_ACCOUNTS);
   const [range, setRange] = useState<Range>("7d");
   const [metric, setMetric] = useState<Metric>("tokens");
   const [breakdown, setBreakdown] = useState<Breakdown>("model");
 
-  const account =
-    ACCOUNTS.find((candidate) => candidate.id === accountId) ?? ACCOUNTS[0];
-  const days = useMemo(() => mockDays(account, range), [account, range]);
+  const all = accountId === ALL_ACCOUNTS;
+  const selected = useMemo(
+    () =>
+      all
+        ? ACCOUNTS
+        : ACCOUNTS.filter((candidate) => candidate.id === accountId),
+    [accountId, all],
+  );
+  // The Account breakdown only means something across several accounts.
+  const shownBreakdown = !all && breakdown === "account" ? "model" : breakdown;
+
+  const perAccount = useMemo(
+    () =>
+      selected.map((account) => {
+        const accountDays = mockDays(account, range);
+        return {
+          account,
+          days: accountDays,
+          tokens: accountDays.reduce((sum, day) => sum + day.tokens, 0),
+          cost: accountDays.reduce((sum, day) => sum + day.cost, 0),
+        };
+      }),
+    [selected, range],
+  );
+
+  const days = useMemo(
+    () =>
+      perAccount[0].days.map((day, index) =>
+        perAccount.slice(1).reduce(
+          (sum, entry) => ({
+            date: sum.date,
+            tokens: sum.tokens + entry.days[index].tokens,
+            cost: sum.cost + entry.days[index].cost,
+            input: sum.input + entry.days[index].input,
+            cachedInput: sum.cachedInput + entry.days[index].cachedInput,
+          }),
+          day,
+        ),
+      ),
+    [perAccount],
+  );
 
   const totals = useMemo(() => {
     const tokens = days.reduce((sum, day) => sum + day.tokens, 0);
@@ -277,20 +318,48 @@ function UsageSection() {
   }, [days]);
 
   const rows = useMemo(() => {
-    const entries =
-      breakdown === "model"
-        ? account.models.map((model) => ({
+    let entries: {
+      key: string;
+      label: string;
+      provider: MockAccount["provider"] | null;
+      tokens: number;
+      cost: number;
+    }[];
+    if (shownBreakdown === "model") {
+      // The same model used from two accounts is one row.
+      const byModel = new Map<string, (typeof entries)[number]>();
+      for (const { account, tokens } of perAccount) {
+        for (const model of account.models) {
+          const row = byModel.get(model.id) ?? {
             key: model.id,
             label: model.id,
-            tokens: totals.tokens * model.weight,
-            cost: totals.tokens * model.weight * (model.rate / 1_000_000),
-          }))
-        : PROJECTS.map((project, index) => ({
-            key: project,
-            label: project,
-            tokens: totals.tokens * PROJECT_WEIGHTS[index],
-            cost: totals.cost * PROJECT_WEIGHTS[index],
-          }));
+            provider: account.provider,
+            tokens: 0,
+            cost: 0,
+          };
+          row.tokens += tokens * model.weight;
+          row.cost += tokens * model.weight * (model.rate / 1_000_000);
+          byModel.set(model.id, row);
+        }
+      }
+      entries = [...byModel.values()];
+    } else if (shownBreakdown === "account") {
+      entries = perAccount.map(({ account, tokens, cost }) => ({
+        key: account.id,
+        label: `${PROVIDER_TITLE[account.provider]} · ${account.label}`,
+        provider: account.provider,
+        tokens,
+        cost,
+      }));
+    } else {
+      entries = PROJECTS.map((project, index) => ({
+        key: project,
+        label: project,
+        provider: null,
+        tokens: totals.tokens * PROJECT_WEIGHTS[index],
+        cost: totals.cost * PROJECT_WEIGHTS[index],
+      }));
+    }
     const costTotal = entries.reduce((sum, entry) => sum + entry.cost, 0);
     return entries
       .map((entry) => ({
@@ -298,21 +367,22 @@ function UsageSection() {
         share: costTotal > 0 ? entry.cost / costTotal : 0,
       }))
       .sort((a, b) => b.cost - a.cost);
-  }, [account, breakdown, totals]);
+  }, [perAccount, shownBreakdown, totals]);
 
   return (
     <Group
       title="Usage"
-      description="Estimated from this account's local session logs at standard API rates. Subscription plans are billed differently."
+      description="Estimated from local session logs at standard API rates. Subscription plans are billed differently."
       action={
         <div className="flex items-center gap-2">
-          <AccountPicker value={account.id} onChange={setAccountId} />
+          <AccountPicker value={accountId} onChange={setAccountId} />
           <Segmented
             label="Usage range"
             value={range}
             options={[
               { value: "7d", label: "7 days" },
               { value: "30d", label: "30 days" },
+              { value: "90d", label: "90 days" },
             ]}
             onChange={setRange}
           />
@@ -362,10 +432,11 @@ function UsageSection() {
           </div>
           <Segmented
             label="Breakdown"
-            value={breakdown}
+            value={shownBreakdown}
             options={[
               { value: "model", label: "Model" },
               { value: "project", label: "Project" },
+              ...(all ? [{ value: "account" as const, label: "Account" }] : []),
             ]}
             onChange={setBreakdown}
           />
@@ -377,14 +448,14 @@ function UsageSection() {
               className="flex h-11 items-center gap-4 border-b border-content/5 px-4 last:border-b-0"
             >
               <div className="flex min-w-0 flex-1 items-center gap-2">
-                {breakdown === "model" ? (
+                {row.provider ? (
                   <HarnessIcon
-                    harness={account.provider}
+                    harness={row.provider}
                     className="size-3.5 shrink-0"
                   />
                 ) : null}
                 <span
-                  className={`truncate text-[12px] text-content/85 ${breakdown === "model" ? "font-mono" : ""}`}
+                  className={`truncate text-[12px] text-content/85 ${shownBreakdown === "model" ? "font-mono" : ""}`}
                 >
                   {row.label}
                 </span>
@@ -451,7 +522,9 @@ function DailyBars({ days, metric }: { days: Day[]; metric: Metric }) {
           ))}
         </div>
         <div
-          className="relative flex h-28 items-end gap-[3px]"
+          className={`relative flex h-28 items-end ${
+            days.length > 45 ? "gap-px" : "gap-[3px]"
+          }`}
           onMouseLeave={() => setHover(null)}
         >
           {days.map((day, index) => {
@@ -520,7 +593,9 @@ function AccountPicker({
       {account ? (
         <HarnessIcon harness={account.provider} className="size-3.5" />
       ) : null}
-      <span className="max-w-[10rem] truncate">{account?.label}</span>
+      <span className="max-w-[10rem] truncate">
+        {account?.label ?? "All accounts"}
+      </span>
       <ChevronDown
         className="pointer-events-none absolute right-1.5 size-3 text-content/40"
         strokeWidth={1.75}
@@ -532,6 +607,7 @@ function AccountPicker({
         onChange={(event) => onChange(event.target.value)}
         className="absolute inset-0 cursor-pointer opacity-0"
       >
+        <option value={ALL_ACCOUNTS}>All accounts</option>
         {(["claude", "codex"] as const).map((provider) => (
           <optgroup key={provider} label={PROVIDER_TITLE[provider]}>
             {ACCOUNTS.filter((account) => account.provider === provider).map(
