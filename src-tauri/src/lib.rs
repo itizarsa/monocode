@@ -25,6 +25,7 @@ mod notes;
 mod notifications;
 mod pasteboard;
 mod project_logo;
+mod provider_usage;
 mod pty;
 #[cfg(target_os = "macos")]
 mod quick_composer;
@@ -422,6 +423,7 @@ pub fn run() {
             account_identity::provider_account_identity,
             rate_limits::fetch_claude_usage,
             rate_limits::fetch_opencode_go_usage,
+            provider_usage::provider_usage_report,
             pty::pty_spawn,
             pty::pty_write,
             pty::pty_resize,

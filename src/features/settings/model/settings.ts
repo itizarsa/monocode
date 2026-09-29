@@ -348,6 +348,12 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     keywords: "account sign in login rename remove delete credentials profile",
   },
   {
+    id: "provider-usage",
+    section: "providers",
+    label: "Usage",
+    keywords: "usage tokens cost spend billing cache model project account",
+  },
+  {
     id: "claude-hooks",
     section: "providers",
     label: "Claude Code hooks",
