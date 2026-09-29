@@ -2,6 +2,12 @@ import { useMemo, useState, type ReactNode } from "react";
 import { ChevronDown, Pencil, Plus } from "../shared/ui/icons";
 import { HarnessIcon } from "../features/sessions/ui/HarnessIcon";
 import type { HarnessId } from "../features/sessions/model/session";
+import { Bar } from "./dither-kit/bar";
+import { BarChart } from "./dither-kit/bar-chart";
+import { Grid } from "./dither-kit/grid";
+import { Tooltip } from "./dither-kit/tooltip";
+import { XAxis } from "./dither-kit/x-axis";
+import { YAxis } from "./dither-kit/y-axis";
 
 /*
  * Design prototype for a per-account Usage section on Settings › Providers.
@@ -503,76 +509,40 @@ function Stat({
 }
 
 function DailyBars({ days, metric }: { days: Day[]; metric: Metric }) {
-  const [hover, setHover] = useState<number | null>(null);
-  const values = days.map((day) => (metric === "cost" ? day.cost : day.tokens));
-  const max = Math.max(...values, 1);
   const format = metric === "cost" ? formatCost : formatTokens;
-  const shown = hover ?? null;
+  const data = useMemo(
+    () =>
+      days.map((day) => ({
+        day: formatDay(day.date),
+        value: metric === "cost" ? day.cost : day.tokens,
+      })),
+    [days, metric],
+  );
+  const config = useMemo(
+    () => ({
+      value: {
+        label: metric === "cost" ? "Cost" : "Tokens",
+        color: "blue" as const,
+      },
+    }),
+    [metric],
+  );
 
   return (
-    <div>
-      <div className="relative">
-        <div className="pointer-events-none absolute inset-x-0 top-0 flex h-28 flex-col justify-between">
-          {[0, 1, 2].map((line) => (
-            <div
-              key={line}
-              className="border-t border-dashed border-content/[0.06]"
-            />
-          ))}
-        </div>
-        <div
-          className="relative flex h-28 items-end gap-[3px]"
-          onMouseLeave={() => setHover(null)}
-        >
-          {days.map((day, index) => {
-            const value = values[index];
-            const active = shown === index;
-            return (
-              <div
-                key={day.date.toISOString()}
-                className="flex h-full min-w-0 flex-1 items-end"
-                onMouseEnter={() => setHover(index)}
-              >
-                <div
-                  className={`mx-auto w-full max-w-8 rounded-t-[3px] transition-colors ${
-                    value === 0
-                      ? "h-px bg-content/10"
-                      : active
-                        ? "bg-accent"
-                        : shown != null
-                          ? "bg-accent/35"
-                          : "bg-accent/60"
-                  }`}
-                  style={
-                    value === 0
-                      ? undefined
-                      : { height: `${Math.max(3, (value / max) * 100)}%` }
-                  }
-                />
-              </div>
-            );
-          })}
-        </div>
-      </div>
-      <div className="mt-2 flex items-center justify-between text-[11px] tabular-nums text-content/40">
-        {shown != null ? (
-          <>
-            <span className="text-content/70">
-              {formatDay(days[shown].date)}
-            </span>
-            <span className="text-content/70">
-              {values[shown] === 0 ? "No activity" : format(values[shown])}
-            </span>
-          </>
-        ) : (
-          <>
-            <span>{formatDay(days[0].date)}</span>
-            <span>Peak {format(max)}</span>
-            <span>{formatDay(days[days.length - 1].date)}</span>
-          </>
-        )}
-      </div>
-    </div>
+    <BarChart
+      key={metric}
+      data={data}
+      config={config}
+      bloom="low"
+      margins={{ left: 48 }}
+      className="h-40"
+    >
+      <Grid />
+      <XAxis dataKey="day" maxTicks={days.length > 7 ? 6 : 7} />
+      <YAxis tickFormatter={format} />
+      <Tooltip labelKey="day" valueFormatter={(value) => format(value)} />
+      <Bar dataKey="value" />
+    </BarChart>
   );
 }
 
