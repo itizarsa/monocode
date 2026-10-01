@@ -515,7 +515,9 @@ function ProviderAccountPicker({
         <h2 className="text-[13px] font-medium">{providerLabel} accounts</h2>
       </div>
       <p className="mt-1 px-1 text-[10px] leading-4 text-content/40">
-        Each conversation stays pinned to the account that started it.
+        {accounts[0]?.provider === "claude"
+          ? "Switching moves this conversation to the selected account."
+          : "Each conversation stays pinned to the account that started it."}
       </p>
       <div
         className="mt-2 flex flex-col gap-1"
