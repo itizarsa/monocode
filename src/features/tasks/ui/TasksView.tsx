@@ -12,6 +12,7 @@ import {
   Globe,
   Kanban,
   ListBullet,
+  MessageSquare,
   Plus,
   Search,
   TaskDone,
@@ -20,7 +21,7 @@ import {
 } from "../../../shared/ui/icons";
 import { OverlayNav } from "../../../app/shell/TitleBar";
 import { WindowControls } from "../../../app/shell/WindowControls";
-import { IS_MAC } from "../../../platform/tauri/platform";
+import { IS_MAC, MOD } from "../../../platform/tauri/platform";
 import { useLockOverscroll } from "../../../shared/hooks/useLockOverscroll";
 import { pathKey, projectKey, projectName } from "../../../shared/lib/paths";
 import { formatRelativeTime } from "../../inbox/model/githubTasks";
@@ -41,8 +42,12 @@ import {
 } from "../../workspace/model/tabGroups";
 import { AgentMarkdown } from "../../sessions/ui/AgentMarkdown";
 import {
+  addTaskComment,
   createTask,
   deleteTask,
+  deleteTaskComment,
+  restoreTask,
+  taskComments,
   labelColor,
   listTasks,
   sameScope,
@@ -57,6 +62,7 @@ import {
   type Task,
   type TaskPriority,
   type TaskScope,
+  type TaskComment,
   type TaskStatus,
 } from "../tasks";
 
@@ -95,6 +101,19 @@ export function TasksView({
   const [query, setQuery] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [composing, setComposing] = useState<TaskStatus | null>(null);
+  const [deleteAsked, setDeleteAsked] = useState<string | null>(null);
+  const [deleted, setDeleted] = useState<Task | null>(null);
+
+  useEffect(() => {
+    if (!deleted) return;
+    const timer = window.setTimeout(() => setDeleted(null), 8000);
+    return () => window.clearTimeout(timer);
+  }, [deleted]);
+
+  const requestDelete = useCallback((id: string) => {
+    setSelectedId(id);
+    setDeleteAsked(id);
+  }, []);
 
   useEffect(() => {
     rememberedScope = scope;
@@ -219,7 +238,7 @@ export function TasksView({
         </div>
         {IS_MAC ? null : <WindowControls />}
       </div>
-      <div className="flex min-h-0 min-w-0 flex-1">
+      <div className="relative flex min-h-0 min-w-0 flex-1">
         <ScopeList
           scope={scope}
           projects={projects}
@@ -250,6 +269,7 @@ export function TasksView({
                 onCreate(status, title);
               }}
               onSelect={setSelectedId}
+              onRequestDelete={requestDelete}
               onMove={onMove}
             />
           ) : (
@@ -262,6 +282,7 @@ export function TasksView({
                 onCreate(status, title);
               }}
               onSelect={setSelectedId}
+              onRequestDelete={requestDelete}
             />
           )}
         </div>
@@ -270,12 +291,37 @@ export function TasksView({
             key={selected.id}
             task={selected}
             marks={marks}
+            confirmDelete={deleteAsked === selected.id}
+            onConfirmDelete={(ask) => setDeleteAsked(ask ? selected.id : null)}
             onClose={() => setSelectedId(null)}
             onDelete={() => {
               deleteTask(selected.id);
+              setDeleted(selected);
+              setDeleteAsked(null);
               setSelectedId(null);
             }}
           />
+        ) : null}
+        {deleted ? (
+          <div
+            role="status"
+            className="pointer-events-auto absolute bottom-4 left-1/2 z-20 flex -translate-x-1/2 items-center gap-3 rounded-lg border border-stroke bg-background-base px-3 py-2 text-[12.5px] shadow-lg"
+          >
+            <span>
+              Deleted{" "}
+              <span className="font-mono text-[11.5px]">{deleted.key}</span>
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                restoreTask(deleted);
+                setDeleted(null);
+              }}
+              className="font-medium text-accent hover:underline"
+            >
+              Undo
+            </button>
+          </div>
         ) : null}
       </div>
     </div>
@@ -634,6 +680,7 @@ function Board({
   onCompose,
   onCreate,
   onSelect,
+  onRequestDelete,
   onMove,
 }: {
   tasks: Task[];
@@ -642,6 +689,7 @@ function Board({
   onCompose: (status: TaskStatus | null) => void;
   onCreate: (status: TaskStatus, title: string) => void;
   onSelect: (id: string) => void;
+  onRequestDelete: (id: string) => void;
   onMove: (id: string, status: TaskStatus) => void;
 }) {
   const [over, setOver] = useState<TaskStatus | null>(null);
@@ -752,6 +800,7 @@ function Board({
                   task={task}
                   active={task.id === selectedId}
                   onSelect={() => onSelect(task.id)}
+                  onRequestDelete={() => onRequestDelete(task.id)}
                 />
               ))}
             </div>
@@ -766,11 +815,14 @@ function TaskCard({
   task,
   active,
   onSelect,
+  onRequestDelete,
 }: {
   task: Task;
   active: boolean;
   onSelect: () => void;
+  onRequestDelete: () => void;
 }) {
+  const comments = taskComments(task).length;
   return (
     <button
       type="button"
@@ -780,6 +832,16 @@ function TaskCard({
         event.dataTransfer.effectAllowed = "move";
       }}
       onClick={onSelect}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        onRequestDelete();
+      }}
+      onKeyDown={(event) => {
+        if (event.key === "Delete" || event.key === "Backspace") {
+          event.preventDefault();
+          onRequestDelete();
+        }
+      }}
       aria-current={active ? "true" : undefined}
       className={`flex w-full flex-col rounded-lg border p-3 text-left transition-colors ${
         active
@@ -815,9 +877,10 @@ function TaskCard({
           ))}
         </div>
       ) : null}
-      <p className="mt-2 truncate text-[11px] text-content/35">
-        Updated {shortDate(task.updatedAt)}
-      </p>
+      <div className="mt-2 flex items-center justify-between gap-2 text-[11px] text-content/35">
+        <span className="truncate">Updated {shortDate(task.updatedAt)}</span>
+        {comments ? <CommentCount count={comments} /> : null}
+      </div>
     </button>
   );
 }
@@ -868,6 +931,7 @@ function ListLayout({
   onCompose,
   onCreate,
   onSelect,
+  onRequestDelete,
 }: {
   tasks: Task[];
   selectedId: string | null;
@@ -875,6 +939,7 @@ function ListLayout({
   onCompose: (status: TaskStatus | null) => void;
   onCreate: (status: TaskStatus, title: string) => void;
   onSelect: (id: string) => void;
+  onRequestDelete: (id: string) => void;
 }) {
   const lock = useLockOverscroll<HTMLDivElement>();
   return (
@@ -913,6 +978,10 @@ function ListLayout({
                 key={task.id}
                 type="button"
                 onClick={() => onSelect(task.id)}
+                onContextMenu={(event) => {
+                  event.preventDefault();
+                  onRequestDelete(task.id);
+                }}
                 className={`flex h-9 w-full items-center gap-3 border-b border-stroke px-4 text-left text-[13px] ${
                   task.id === selectedId
                     ? "bg-content/[0.06]"
@@ -927,6 +996,9 @@ function ListLayout({
                 </span>
                 <StatusIcon status={task.status} className="size-[15px]" />
                 <span className="min-w-0 flex-1 truncate">{task.title}</span>
+                {taskComments(task).length ? (
+                  <CommentCount count={taskComments(task).length} />
+                ) : null}
                 {task.sourceSessionId ? <AgentChip /> : null}
                 {task.labels.map((label) => (
                   <LabelPill key={label} label={label} />
@@ -954,14 +1026,30 @@ function ListLayout({
 function TaskDetail({
   task,
   marks,
+  confirmDelete,
+  onConfirmDelete,
   onClose,
   onDelete,
 }: {
   task: Task;
   marks: ProjectMarks;
+  confirmDelete: boolean;
+  onConfirmDelete: (ask: boolean) => void;
   onClose: () => void;
   onDelete: () => void;
 }) {
+  const comments = taskComments(task);
+  useEffect(() => {
+    if (!confirmDelete) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      onConfirmDelete(false);
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [confirmDelete, onConfirmDelete]);
   const [title, setTitle] = useState(task.title);
   const [description, setDescription] = useState(task.description);
   const [editing, setEditing] = useState(!task.description);
@@ -985,8 +1073,13 @@ function TaskDetail({
           type="button"
           title="Delete task"
           aria-label="Delete task"
-          onClick={onDelete}
-          className="grid size-6 place-items-center rounded-md text-content/40 hover:bg-content/10 hover:text-content"
+          aria-pressed={confirmDelete}
+          onClick={() => onConfirmDelete(!confirmDelete)}
+          className={`grid size-6 place-items-center rounded-md hover:bg-content/10 ${
+            confirmDelete
+              ? "bg-content/10 text-red-400"
+              : "text-content/40 hover:text-content"
+          }`}
         >
           <Trash2 className="size-3.5" />
         </button>
@@ -1000,6 +1093,40 @@ function TaskDetail({
           <X className="size-3.5" />
         </button>
       </div>
+      {confirmDelete ? (
+        <div
+          role="alertdialog"
+          aria-label={`Delete ${task.key}`}
+          className="flex shrink-0 flex-col gap-2 border-b border-stroke bg-red-500/[0.07] px-4 py-3"
+        >
+          <p className="text-[12.5px] text-content">
+            Delete <span className="font-mono text-[11.5px]">{task.key}</span>
+            {comments.length
+              ? ` and its ${comments.length} ${comments.length === 1 ? "comment" : "comments"}?`
+              : "?"}
+          </p>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              autoFocus
+              onClick={onDelete}
+              className="h-7 rounded-md bg-red-500 px-2.5 text-[12px] font-medium text-white hover:bg-red-500/90"
+            >
+              Delete task
+            </button>
+            <button
+              type="button"
+              onClick={() => onConfirmDelete(false)}
+              className="h-7 rounded-md px-2.5 text-[12px] text-content/70 hover:bg-content/10 hover:text-content"
+            >
+              Cancel
+            </button>
+            <span className="ml-auto text-[11px] text-content/40">
+              You can undo right after
+            </span>
+          </div>
+        </div>
+      ) : null}
       <div
         ref={lock}
         className="min-h-0 flex-1 overflow-y-auto overscroll-none p-4"
@@ -1131,6 +1258,7 @@ function TaskDetail({
             {formatRelativeTime(new Date(task.updatedAt).toISOString())}
           </p>
         </div>
+        <TaskComments task={task} comments={comments} />
       </div>
     </aside>
   );
@@ -1163,5 +1291,121 @@ function PropertySelect({
         ))}
       </select>
     </label>
+  );
+}
+
+function CommentCount({ count }: { count: number }) {
+  return (
+    <span
+      className="inline-flex shrink-0 items-center gap-1 text-[11px] text-content/45"
+      aria-label={`${count} ${count === 1 ? "comment" : "comments"}`}
+    >
+      <MessageSquare className="size-3" />
+      {count}
+    </span>
+  );
+}
+
+function TaskComments({
+  task,
+  comments,
+}: {
+  task: Task;
+  comments: TaskComment[];
+}) {
+  const [draft, setDraft] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const send = () => {
+    if (!draft.trim()) return;
+    try {
+      addTaskComment(task.id, draft);
+      setDraft("");
+      setError(null);
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  };
+  return (
+    <section aria-label="Comments" className="mt-4 border-t border-stroke pt-3">
+      <div className="mb-2 flex items-center gap-1.5 text-[11.5px] font-medium text-content/50">
+        Comments
+        {comments.length ? (
+          <span className="font-normal tabular-nums text-content/35">
+            {comments.length}
+          </span>
+        ) : null}
+      </div>
+      {comments.length ? (
+        <ol className="mb-3 flex flex-col gap-3">
+          {comments.map((comment) => (
+            <li key={comment.id} className="group flex gap-2">
+              <span
+                className={`mt-0.5 grid size-5 shrink-0 place-items-center rounded-full text-[10px] font-semibold ${
+                  comment.sessionId
+                    ? "bg-content/10 text-content/70"
+                    : "bg-accent/20 text-accent"
+                }`}
+                aria-hidden
+              >
+                {comment.sessionId ? <Bot className="size-3" /> : "Y"}
+              </span>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-1.5 text-[11.5px]">
+                  <span className="font-medium text-content/85">
+                    {comment.sessionId ? "Agent" : "You"}
+                  </span>
+                  <span className="text-content/35">
+                    {formatRelativeTime(
+                      new Date(comment.createdAt).toISOString(),
+                    )}
+                  </span>
+                  <button
+                    type="button"
+                    title="Delete comment"
+                    aria-label="Delete comment"
+                    onClick={() => deleteTaskComment(task.id, comment.id)}
+                    className="ml-auto grid size-5 place-items-center rounded text-content/35 opacity-0 hover:bg-content/10 hover:text-content group-hover:opacity-100 focus-visible:opacity-100"
+                  >
+                    <X className="size-3" />
+                  </button>
+                </div>
+                <div className="text-[12.5px] leading-relaxed text-content/85">
+                  <AgentMarkdown text={comment.body} />
+                </div>
+              </div>
+            </li>
+          ))}
+        </ol>
+      ) : null}
+      <div className="rounded-md border border-stroke focus-within:border-content/25">
+        <textarea
+          value={draft}
+          rows={2}
+          placeholder="Leave a comment"
+          aria-label="New comment"
+          onChange={(event) => setDraft(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+              event.preventDefault();
+              send();
+            }
+          }}
+          className="field-sizing-content block max-h-60 min-h-[52px] w-full resize-none bg-transparent px-2 pt-2 text-[12.5px] leading-relaxed text-content outline-none placeholder:text-content/35"
+        />
+        <div className="flex items-center justify-between px-2 pb-1.5">
+          <span className="text-[10.5px] text-content/35">
+            {error ?? `${MOD}Enter to send`}
+          </span>
+          <button
+            type="button"
+            disabled={!draft.trim()}
+            onClick={send}
+            className="h-6 rounded-md bg-content/10 px-2 text-[11.5px] font-medium text-content hover:bg-content/15 disabled:opacity-40"
+          >
+            Comment
+          </button>
+        </div>
+      </div>
+    </section>
   );
 }

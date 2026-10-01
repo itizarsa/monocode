@@ -21,6 +21,8 @@ const ACTION_LABELS: Record<string, string> = {
   "tasks.list": "List tasks",
   "tasks.read": "Read a task",
   "tasks.write": "Write a task",
+  "tasks.comment": "Comment on a task",
+  "tasks.delete": "Delete a task",
 };
 
 /** Conservatively parse one shell invocation; compound commands use the shell row. */
