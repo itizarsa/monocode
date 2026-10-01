@@ -4051,7 +4051,9 @@ mod claude_profile_link_tests {
             std::fs::read_to_string(shared.join("projects/-repo/new.jsonl")).unwrap(),
             "work\n"
         );
-        assert!(shared.join("projects/-repo/new/subagents/a.jsonl").is_file());
+        assert!(shared
+            .join("projects/-repo/new/subagents/a.jsonl")
+            .is_file());
         assert!(shared.join("projects/-other/x.jsonl").is_file());
         assert!(shared.join("projects/-repo/old.jsonl").is_file());
         assert!(std::fs::symlink_metadata(profile.join("projects"))
