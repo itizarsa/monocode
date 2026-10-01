@@ -26,6 +26,19 @@ import {
   type Note,
   type NoteUpsert,
 } from "../../notes";
+import {
+  createTask,
+  getTask,
+  isTaskPriority,
+  isTaskStatus,
+  listTasks,
+  TASK_PRIORITIES,
+  TASK_STATUSES,
+  updateTask,
+  type Task,
+  type TaskInput,
+  type TaskScope,
+} from "../../tasks/tasks";
 import type { QuickLaunch } from "../../quick-composer/model/quickComposer";
 import type { Worktree, Worktrees } from "../../source-control/model/worktrees";
 import { pathKey } from "../../../shared/lib/paths";
@@ -108,6 +121,12 @@ const FIELDS = new Map<string, readonly string[]>([
   ["notes.list", ["limit", "offset"]],
   ["notes.read", ["id"]],
   ["notes.write", ["id", "title", "body", "tags"]],
+  ["tasks.list", ["scope", "status", "limit", "offset"]],
+  ["tasks.read", ["id"]],
+  [
+    "tasks.write",
+    ["id", "scope", "title", "description", "status", "priority", "labels"],
+  ],
 ]);
 
 function fields(action: string, input: Record<string, unknown>) {
@@ -157,6 +176,61 @@ function noteTags(value: unknown): string[] {
       "tags must be an array of at most 20 strings under 48 characters each",
     );
   return normalizeNoteTags(value as string[]);
+}
+
+function taskScopeFor(source: Session, value: unknown): TaskScope {
+  const scope = value ?? (looksLikeProject(source.cwd) ? "project" : "global");
+  if (scope === "global") return { kind: "global" };
+  if (scope === "project")
+    return { kind: "project", cwd: requireProject(source) };
+  throw new Error('scope must be "project" or "global"');
+}
+
+function taskFields(input: Record<string, unknown>): TaskInput {
+  const out: TaskInput = {};
+  if (input.title !== undefined)
+    out.title = requiredString(input.title, "title", 200);
+  if (input.description !== undefined) {
+    if (
+      typeof input.description !== "string" ||
+      input.description.length > 60_000
+    )
+      throw new Error("description must be a string under 60000 characters");
+    out.description = input.description;
+  }
+  if (input.status !== undefined) {
+    if (!isTaskStatus(input.status))
+      throw new Error(`status must be one of ${TASK_STATUSES.join(", ")}`);
+    out.status = input.status;
+  }
+  if (input.priority !== undefined) {
+    if (!isTaskPriority(input.priority))
+      throw new Error(`priority must be one of ${TASK_PRIORITIES.join(", ")}`);
+    out.priority = input.priority;
+  }
+  if (input.labels !== undefined) {
+    if (
+      !Array.isArray(input.labels) ||
+      input.labels.length > 10 ||
+      input.labels.some((label) => typeof label !== "string")
+    )
+      throw new Error("labels must be an array of at most 10 strings");
+    out.labels = input.labels as string[];
+  }
+  return out;
+}
+
+function taskSummary(task: Task) {
+  return {
+    id: task.id,
+    key: task.key,
+    title: task.title,
+    status: task.status,
+    priority: task.priority,
+    labels: task.labels,
+    scope: task.projectCwd ? "project" : "global",
+    updatedAt: new Date(task.updatedAt).toISOString(),
+  };
 }
 
 function requireProject(source: Session): string {
@@ -530,6 +604,64 @@ export async function handleAgentApp(
         sourceSessionId: source.id,
         ...(looksLikeProject(source.cwd) ? { sourceCwd: source.cwd } : {}),
       });
+    }
+    case "tasks.list": {
+      const scope = taskScopeFor(source, input.scope);
+      const limit = input.limit ?? 50;
+      const offset = input.offset ?? 0;
+      if (
+        !Number.isInteger(limit) ||
+        (limit as number) < 1 ||
+        (limit as number) > 200
+      )
+        throw new Error("limit must be an integer from 1 to 200");
+      if (!Number.isInteger(offset) || (offset as number) < 0)
+        throw new Error("offset must be a non-negative integer");
+      if (input.status !== undefined && !isTaskStatus(input.status))
+        throw new Error(`status must be one of ${TASK_STATUSES.join(", ")}`);
+      const tasks = listTasks(scope).filter(
+        (task) => input.status === undefined || task.status === input.status,
+      );
+      return {
+        scope: scope.kind,
+        ...(scope.kind === "project" ? { cwd: scope.cwd } : {}),
+        total: tasks.length,
+        offset,
+        tasks: tasks
+          .slice(offset as number, (offset as number) + (limit as number))
+          .map(taskSummary),
+      };
+    }
+    case "tasks.read": {
+      const task = getTask(requiredString(input.id, "id", 256));
+      if (!task) throw new Error("Task was not found");
+      return task;
+    }
+    case "tasks.write": {
+      const id = optionalString(input.id, "id", 256);
+      const patch = taskFields(input);
+      if (id) {
+        if (input.scope !== undefined)
+          throw new Error("scope cannot change on an existing task");
+        if (!Object.keys(patch).length)
+          throw new Error(
+            "Supply title, description, status, priority or labels to update a task",
+          );
+        const current = getTask(id);
+        if (!current) throw new Error("Task was not found");
+        return updateTask(current.id, patch, { sessionId: source.id });
+      }
+      if (!patch.title) throw new Error("title is required to create a task");
+      if (!/^[A-Za-z0-9_-]{1,128}$/.test(requestId))
+        throw new Error("Invalid request ID");
+      const createdId = `app-${source.id}-${requestId}`;
+      const existing = getTask(createdId);
+      if (existing) return existing;
+      return createTask(
+        taskScopeFor(source, input.scope),
+        { ...patch, title: patch.title },
+        { id: createdId, sourceSessionId: source.id },
+      );
     }
   }
 }
