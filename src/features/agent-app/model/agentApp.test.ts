@@ -740,3 +740,102 @@ describe("agent app commands", () => {
     ).rejects.toThrow("body is required");
   });
 });
+
+describe("agent app tasks", () => {
+  it("creates project and global tasks idempotently and lists them by scope", async () => {
+    const { source, host } = fixture();
+    const created = await handleAgentApp(
+      source,
+      "task-1",
+      "tasks.write",
+      { title: "Write release notes", priority: "high", labels: ["Release"] },
+      host,
+    );
+    expect(created).toMatchObject({
+      id: "app-lead-task-1",
+      key: "PROJ-1",
+      status: "todo",
+      priority: "high",
+      labels: ["release"],
+      projectCwd: "/tmp/project",
+      sourceSessionId: "lead",
+    });
+    expect(
+      await handleAgentApp(
+        source,
+        "task-1",
+        "tasks.write",
+        { title: "Write release notes" },
+        host,
+      ),
+    ).toEqual(created);
+    await handleAgentApp(
+      source,
+      "task-2",
+      "tasks.write",
+      { title: "Rotate keys", scope: "global", status: "backlog" },
+      host,
+    );
+    const project = (await handleAgentApp(
+      source,
+      "list-1",
+      "tasks.list",
+      {},
+      host,
+    )) as { total: number; tasks: { key: string }[] };
+    expect(project.total).toBe(1);
+    expect(project.tasks[0]!.key).toBe("PROJ-1");
+    const global = (await handleAgentApp(
+      source,
+      "list-2",
+      "tasks.list",
+      { scope: "global", status: "backlog" },
+      host,
+    )) as { total: number; tasks: { key: string; scope: string }[] };
+    expect(global.tasks).toMatchObject([{ key: "TASK-1", scope: "global" }]);
+  });
+
+  it("updates a task by key and rejects bad fields", async () => {
+    const { source, host } = fixture();
+    await handleAgentApp(
+      source,
+      "task-1",
+      "tasks.write",
+      { title: "Fix flaky test" },
+      host,
+    );
+    const moved = await handleAgentApp(
+      source,
+      "task-2",
+      "tasks.write",
+      { id: "proj-1", status: "in_progress" },
+      host,
+    );
+    expect(moved).toMatchObject({
+      title: "Fix flaky test",
+      status: "in_progress",
+      updatedBySessionId: "lead",
+    });
+    await expect(
+      handleAgentApp(
+        source,
+        "task-3",
+        "tasks.write",
+        { id: "PROJ-1", status: "started" },
+        host,
+      ),
+    ).rejects.toThrow("status must be one of");
+    await expect(
+      handleAgentApp(
+        source,
+        "task-4",
+        "tasks.write",
+        { id: "PROJ-1", scope: "global" },
+        host,
+      ),
+    ).rejects.toThrow("scope cannot change");
+    await expect(
+      handleAgentApp(source, "task-5", "tasks.read", { id: "NOPE-9" }, host),
+    ).rejects.toThrow("Task was not found");
+  });
+});

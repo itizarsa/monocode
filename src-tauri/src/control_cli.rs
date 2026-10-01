@@ -82,7 +82,7 @@ const ACTIONS: [&str; 12] = [
     "list", "delegate", "get", "steer", "message", "retry", "cancel", "wait", "review", "finish",
     "respond", "answer",
 ];
-const APP_ACTIONS: [&str; 13] = [
+const APP_ACTIONS: [&str; 16] = [
     "models.list",
     "sessions.list",
     "sessions.read",
@@ -96,6 +96,9 @@ const APP_ACTIONS: [&str; 13] = [
     "notes.list",
     "notes.read",
     "notes.write",
+    "tasks.list",
+    "tasks.read",
+    "tasks.write",
 ];
 const APP_USAGE: &str = r#"MonoCode app access — use in a thread enabled by /operator.
 
@@ -153,6 +156,17 @@ Actions:
                   to derive it from the body. Use {"id":"...","body":"..."}
                   to edit an existing note; title and tags are also optional.
                   Omitted fields stay unchanged. Reuse --request-id on retries.
+  tasks.list     {"scope":"project","status":"todo","limit":50,"offset":0}
+                  Tasks for this project, or "scope":"global" for tasks that
+                  belong to no project. status is one of backlog, todo,
+                  in_progress, done, canceled; omit it for every status.
+  tasks.read     {"id":"MONO-12"}  One task by key or ID, with its description.
+  tasks.write    {"title":"Ship it","description":"Markdown","status":"todo",
+                  "priority":"high","labels":["release"],"scope":"project"}
+                  Create a task in this project, or "scope":"global". Priority
+                  is none, low, medium, high or urgent. Use {"id":"MONO-12",
+                  "status":"in_progress"} to update a task; omitted fields stay
+                  unchanged and scope cannot change. Reuse --request-id on retries.
 
 The output is one JSON line: {"ok":true,"result":...} or {"ok":false,"error":"..."}.
 Use --input - to pass JSON on stdin. Never print MonoCode credentials.
