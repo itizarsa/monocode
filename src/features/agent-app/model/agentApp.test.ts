@@ -838,4 +838,72 @@ describe("agent app tasks", () => {
       handleAgentApp(source, "task-5", "tasks.read", { id: "NOPE-9" }, host),
     ).rejects.toThrow("Task was not found");
   });
+
+  it("comments on a task once per request and deletes it with its comments", async () => {
+    const { source, host } = fixture();
+    await handleAgentApp(
+      source,
+      "task-1",
+      "tasks.write",
+      { title: "Ship tasks" },
+      host,
+    );
+    const first = await handleAgentApp(
+      source,
+      "comment-1",
+      "tasks.comment",
+      { id: "PROJ-1", body: "Started on the store." },
+      host,
+    );
+    expect(first).toMatchObject({
+      key: "PROJ-1",
+      comment: { body: "Started on the store.", sessionId: "lead" },
+    });
+    expect(
+      await handleAgentApp(
+        source,
+        "comment-1",
+        "tasks.comment",
+        { id: "PROJ-1", body: "Started on the store." },
+        host,
+      ),
+    ).toEqual(first);
+    const read = (await handleAgentApp(
+      source,
+      "read-1",
+      "tasks.read",
+      { id: "PROJ-1" },
+      host,
+    )) as { comments: unknown[] };
+    expect(read.comments).toHaveLength(1);
+    await expect(
+      handleAgentApp(
+        source,
+        "comment-2",
+        "tasks.comment",
+        { id: "PROJ-1", body: "   " },
+        host,
+      ),
+    ).rejects.toThrow("Comment cannot be empty");
+    expect(
+      await handleAgentApp(
+        source,
+        "delete-1",
+        "tasks.delete",
+        { id: "PROJ-1" },
+        host,
+      ),
+    ).toMatchObject({ deleted: true, key: "PROJ-1" });
+    await expect(
+      handleAgentApp(source, "delete-2", "tasks.delete", { id: "PROJ-1" }, host),
+    ).rejects.toThrow("Task was not found");
+    const next = await handleAgentApp(
+      source,
+      "task-2",
+      "tasks.write",
+      { title: "Next one" },
+      host,
+    );
+    expect(next).toMatchObject({ key: "PROJ-2" });
+  });
 });

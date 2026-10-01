@@ -38,6 +38,14 @@ export const TASK_PRIORITY_LABEL: Record<TaskPriority, string> = {
   urgent: "Urgent",
 };
 
+export type TaskComment = {
+  id: string;
+  body: string;
+  /** Set when an agent wrote the comment through /operator. */
+  sessionId?: string;
+  createdAt: number;
+};
+
 /** A task belongs to one project, or to no project at all. */
 export type TaskScope = { kind: "global" } | { kind: "project"; cwd: string };
 
@@ -56,6 +64,8 @@ export type Task = {
   sourceSessionId?: string;
   /** Session that last changed the task through /operator. */
   updatedBySessionId?: string;
+  /** Oldest first. Absent on tasks saved before comments existed. */
+  comments?: TaskComment[];
   createdAt: number;
   updatedAt: number;
 };
@@ -72,6 +82,8 @@ type Stored = { tasks: Task[]; counters: Record<string, number> };
 
 export const MAX_TASK_TITLE = 200;
 export const MAX_TASK_LABELS = 10;
+export const MAX_TASK_COMMENT = 20_000;
+export const MAX_TASK_COMMENTS = 500;
 
 function storage(): Storage | null {
   try {
@@ -214,9 +226,78 @@ export function updateTask(
   return next;
 }
 
-export function deleteTask(id: string) {
+/** Removes the task and its comments. Its key is not reused. */
+export function deleteTask(id: string): boolean {
   const stored = read();
-  write({ ...stored, tasks: stored.tasks.filter((task) => task.id !== id) });
+  const tasks = stored.tasks.filter((task) => task.id !== id);
+  if (tasks.length === stored.tasks.length) return false;
+  write({ ...stored, tasks });
+  return true;
+}
+
+/** Puts a deleted task back as it was, for undo. */
+export function restoreTask(task: Task) {
+  const stored = read();
+  if (stored.tasks.some((item) => item.id === task.id)) return;
+  write({ ...stored, tasks: [...stored.tasks, task] });
+}
+
+export function taskComments(task: Task): TaskComment[] {
+  return task.comments ?? [];
+}
+
+export function addTaskComment(
+  id: string,
+  body: string,
+  meta: { commentId?: string; sessionId?: string; now?: number } = {},
+): TaskComment {
+  const text = body.replace(/\r\n?/g, "\n").trim();
+  if (!text) throw new Error("Comment cannot be empty");
+  if (text.length > MAX_TASK_COMMENT)
+    throw new Error(`Comment must be under ${MAX_TASK_COMMENT} characters`);
+  const stored = read();
+  const current = stored.tasks.find((task) => task.id === id);
+  if (!current) throw new Error("Task was not found");
+  const existing = taskComments(current);
+  const repeat = meta.commentId
+    ? existing.find((comment) => comment.id === meta.commentId)
+    : undefined;
+  if (repeat) return repeat;
+  if (existing.length >= MAX_TASK_COMMENTS)
+    throw new Error("This task has too many comments");
+  const now = meta.now ?? Date.now();
+  const comment: TaskComment = {
+    id: meta.commentId ?? crypto.randomUUID(),
+    body: text,
+    ...(meta.sessionId ? { sessionId: meta.sessionId } : {}),
+    createdAt: now,
+  };
+  write({
+    ...stored,
+    tasks: stored.tasks.map((task) =>
+      task.id === id
+        ? { ...task, comments: [...existing, comment], updatedAt: now }
+        : task,
+    ),
+  });
+  return comment;
+}
+
+export function deleteTaskComment(id: string, commentId: string) {
+  const stored = read();
+  write({
+    ...stored,
+    tasks: stored.tasks.map((task) =>
+      task.id === id
+        ? {
+            ...task,
+            comments: taskComments(task).filter(
+              (comment) => comment.id !== commentId,
+            ),
+          }
+        : task,
+    ),
+  });
 }
 
 /** Projects that already hold tasks, for the scope list. */

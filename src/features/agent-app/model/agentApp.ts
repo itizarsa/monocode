@@ -27,7 +27,9 @@ import {
   type NoteUpsert,
 } from "../../notes";
 import {
+  addTaskComment,
   createTask,
+  deleteTask,
   getTask,
   isTaskPriority,
   isTaskStatus,
@@ -127,6 +129,8 @@ const FIELDS = new Map<string, readonly string[]>([
     "tasks.write",
     ["id", "scope", "title", "description", "status", "priority", "labels"],
   ],
+  ["tasks.comment", ["id", "body"]],
+  ["tasks.delete", ["id"]],
 ]);
 
 function fields(action: string, input: Record<string, unknown>) {
@@ -662,6 +666,25 @@ export async function handleAgentApp(
         { ...patch, title: patch.title },
         { id: createdId, sourceSessionId: source.id },
       );
+    }
+    case "tasks.comment": {
+      const task = getTask(requiredString(input.id, "id", 256));
+      if (!task) throw new Error("Task was not found");
+      if (typeof input.body !== "string")
+        throw new Error("body must be a string");
+      if (!/^[A-Za-z0-9_-]{1,128}$/.test(requestId))
+        throw new Error("Invalid request ID");
+      const comment = addTaskComment(task.id, input.body, {
+        commentId: `app-${source.id}-${requestId}`,
+        sessionId: source.id,
+      });
+      return { taskId: task.id, key: task.key, comment };
+    }
+    case "tasks.delete": {
+      const task = getTask(requiredString(input.id, "id", 256));
+      if (!task) throw new Error("Task was not found");
+      deleteTask(task.id);
+      return { deleted: true, id: task.id, key: task.key };
     }
   }
 }
