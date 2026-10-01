@@ -82,7 +82,7 @@ const ACTIONS: [&str; 12] = [
     "list", "delegate", "get", "steer", "message", "retry", "cancel", "wait", "review", "finish",
     "respond", "answer",
 ];
-const APP_ACTIONS: [&str; 16] = [
+const APP_ACTIONS: [&str; 18] = [
     "models.list",
     "sessions.list",
     "sessions.read",
@@ -99,6 +99,8 @@ const APP_ACTIONS: [&str; 16] = [
     "tasks.list",
     "tasks.read",
     "tasks.write",
+    "tasks.comment",
+    "tasks.delete",
 ];
 const APP_USAGE: &str = r#"MonoCode app access — use in a thread enabled by /operator.
 
@@ -160,13 +162,19 @@ Actions:
                   Tasks for this project, or "scope":"global" for tasks that
                   belong to no project. status is one of backlog, todo,
                   in_progress, done, canceled; omit it for every status.
-  tasks.read     {"id":"MONO-12"}  One task by key or ID, with its description.
+  tasks.read     {"id":"MONO-12"}  One task by key or ID, with its description
+                  and comments.
   tasks.write    {"title":"Ship it","description":"Markdown","status":"todo",
                   "priority":"high","labels":["release"],"scope":"project"}
                   Create a task in this project, or "scope":"global". Priority
                   is none, low, medium, high or urgent. Use {"id":"MONO-12",
                   "status":"in_progress"} to update a task; omitted fields stay
                   unchanged and scope cannot change. Reuse --request-id on retries.
+  tasks.comment  {"id":"MONO-12","body":"Markdown"}
+                  Add a comment to a task, such as progress or a handoff note.
+                  Reuse --request-id on retries.
+  tasks.delete   {"id":"MONO-12"}  Delete a task and its comments. Only do
+                  this when the user asks; prefer status "canceled".
 
 The output is one JSON line: {"ok":true,"result":...} or {"ok":false,"error":"..."}.
 Use --input - to pass JSON on stdin. Never print MonoCode credentials.
