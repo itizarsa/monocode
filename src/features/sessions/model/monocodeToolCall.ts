@@ -18,6 +18,9 @@ const ACTION_LABELS: Record<string, string> = {
   "notes.list": "List notes",
   "notes.read": "Read a note",
   "notes.write": "Write a note",
+  "tasks.list": "List tasks",
+  "tasks.read": "Read a task",
+  "tasks.write": "Write a task",
 };
 
 /** Conservatively parse one shell invocation; compound commands use the shell row. */

@@ -12,6 +12,7 @@ import {
   Plus,
   Search,
   Settings,
+  TaskDone,
   Zap,
 } from "../../shared/ui/icons";
 import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
@@ -108,7 +109,9 @@ type Props = {
   onOpenNotes?: () => void;
   notesActive?: boolean;
   onOpenAutomations?: () => void;
+  onOpenTasks?: () => void;
   automationsActive?: boolean;
+  tasksActive?: boolean;
   onTogglePanel?: () => void;
   onSelectProject: (path: string) => void;
   onOpenProject: () => void;
@@ -145,7 +148,9 @@ export function ProjectRail({
   onOpenNotes,
   notesActive = false,
   onOpenAutomations,
+  onOpenTasks,
   automationsActive = false,
+  tasksActive = false,
   onTogglePanel,
   onSelectProject,
   onOpenProject,
@@ -394,6 +399,15 @@ export function ProjectRail({
                 ariaLabel="Notes"
               />
             ) : null}
+            {onOpenTasks ? (
+              <RailAction
+                label="Tasks"
+                icon={TaskDone}
+                onClick={onOpenTasks}
+                active={tasksActive}
+                ariaLabel="Tasks"
+              />
+            ) : null}
             <RailAction
               label="Automations"
               icon={Zap}
@@ -424,7 +438,7 @@ export function ProjectRail({
                   searchActive ||
                   inboxActive ||
                   notesActive ||
-                  automationsActive
+                  automationsActive || tasksActive
                 }
                 onSelect={onSelectProject}
                 onTogglePin={toggleProjectPin}
@@ -458,7 +472,7 @@ export function ProjectRail({
                         searchActive ||
                         inboxActive ||
                         notesActive ||
-                        automationsActive
+                        automationsActive || tasksActive
                       }
                       onSelect={onSelectProject}
                       onTogglePin={toggleProjectPin}
@@ -501,7 +515,7 @@ export function ProjectRail({
               sortable={projectSortable}
               pinned={false}
               searchActive={
-                searchActive || inboxActive || notesActive || automationsActive
+                searchActive || inboxActive || notesActive || automationsActive || tasksActive
               }
               onSelect={onSelectProject}
               onTogglePin={toggleProjectPin}
