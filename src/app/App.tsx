@@ -387,6 +387,7 @@ import {
   supportsProviderAccounts,
   type ProviderAccountProvider,
 } from "../features/providers/model/providerAccounts";
+import { providerAccountsShareHistory } from "../features/providers/model/providerAccountCredentials";
 import {
   HARNESSES,
   HARNESS_LABEL,
@@ -2198,12 +2199,11 @@ export default function App({
   );
 
   const onSelectProviderAccount = useCallback(
-    (provider: ProviderAccountProvider, accountId: string) => {
+    async (provider: ProviderAccountProvider, accountId: string) => {
       if (!active || active.harness !== provider) return;
       const currentId = active.providerAccountId ?? DEFAULT_PROVIDER_ACCOUNT_ID;
       if (currentId === accountId) return;
-
-      if (active.blocks.length === 0 && !active.busy) {
+      const switchInPlace = () =>
         setSessions((current) =>
           current.map((session) =>
             session.id === active.id
@@ -2211,11 +2211,25 @@ export default function App({
               : session,
           ),
         );
+
+      if (active.blocks.length === 0 && !active.busy) {
+        switchInPlace();
         return;
       }
 
-      // Provider thread ids are account-owned. Keep the current conversation
-      // pinned to its account and open a clean one for the selected profile.
+      // When both accounts read one transcript store, the next message
+      // resumes this conversation on the selected account.
+      if (
+        !active.busy &&
+        (await providerAccountsShareHistory(provider, currentId, accountId))
+      ) {
+        switchInPlace();
+        return;
+      }
+
+      // Otherwise provider thread ids are account-owned. Keep the current
+      // conversation pinned to its account and open a clean one for the
+      // selected profile.
       const session = {
         ...newSession(
           active.harness,

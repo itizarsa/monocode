@@ -211,6 +211,14 @@ impl HarnessHost {
         inner.children.remove(session_id)
     }
 
+    fn account_in_use(&self, provider: &str, account_id: &str) -> bool {
+        self.lock_inner().children.values().any(|live| {
+            live.account
+                .as_ref()
+                .is_some_and(|account| account.provider == provider && account.id == account_id)
+        })
+    }
+
     fn kill_account(&self, provider: &str, account_id: &str) {
         let children: Vec<(String, Arc<LiveChild>)> = {
             let mut inner = self.lock_inner();
@@ -856,7 +864,10 @@ pub fn harness_spawn(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     prepare_child(&mut cmd, &command);
-    apply_provider_account(&app, &mut cmd, account.as_ref())?;
+    let account_idle = account
+        .as_ref()
+        .is_none_or(|account| !host.account_in_use(&account.provider, &account.id));
+    apply_provider_account(&app, &mut cmd, account.as_ref(), account_idle)?;
 
     crate::control::configure_child(&app, &session_id, &mut cmd);
 
@@ -1032,10 +1043,13 @@ pub fn provider_account_remove(
     })
 }
 
+/// `account_idle` is true when no other live process runs on this account, so
+/// its profile's own history can be moved into the shared config dir.
 fn apply_provider_account(
     app: &AppHandle,
     cmd: &mut Command,
     account: Option<&HarnessAccount>,
+    account_idle: bool,
 ) -> Result<(), String> {
     let Some(account) = account else {
         return Ok(());
@@ -1047,6 +1061,7 @@ fn apply_provider_account(
         "claude" => {
             if let Some(shared) = default_claude_config_dir() {
                 link_claude_user_resources(&shared, &dir);
+                share_claude_history(&shared, &dir, account_idle);
             }
             // Claude scopes both its ordinary config and its macOS Keychain
             // credential to these exact strings. Setting both keeps profiles
@@ -1101,18 +1116,149 @@ fn link_claude_user_resources(shared: &Path, profile: &Path) {
         if !target.is_dir() || std::fs::symlink_metadata(&link).is_ok() {
             continue;
         }
-        #[cfg(unix)]
-        let linked = std::os::unix::fs::symlink(&target, &link);
-        #[cfg(windows)]
-        let linked = std::os::windows::fs::symlink_dir(&target, &link);
-        if let Err(error) = linked {
+        link_dir(&target, &link);
+    }
+}
+
+/// Where Claude keeps a conversation: transcripts under `projects/`, plus the
+/// per-session todos, file checkpoints, shell env and plan files a resumed
+/// session reads back. No credentials live here.
+const CLAUDE_SHARED_HISTORY_DIRS: [&str; 5] =
+    ["projects", "todos", "file-history", "session-env", "plans"];
+
+/// Serializes history moves so two spawns on one account cannot race.
+static CLAUDE_HISTORY_MIGRATION: Mutex<()> = Mutex::new(());
+
+/// Point an account profile's conversation history at the default profile's,
+/// so any account can resume any conversation. History the profile already
+/// has is moved into the shared dir first, but only while no process runs on
+/// the account (`can_move`) and only when every file can move without
+/// replacing one. Otherwise the profile keeps its own history for now.
+/// Returns whether the profile's transcripts are shared.
+fn share_claude_history(shared: &Path, profile: &Path, can_move: bool) -> bool {
+    if shared == profile {
+        return true;
+    }
+    let _guard = CLAUDE_HISTORY_MIGRATION
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    for name in CLAUDE_SHARED_HISTORY_DIRS {
+        let target = shared.join(name);
+        let link = profile.join(name);
+        if std::fs::create_dir_all(&target).is_err() {
+            continue;
+        }
+        let Ok(meta) = std::fs::symlink_metadata(&link) else {
+            link_dir(&target, &link);
+            continue;
+        };
+        if meta.file_type().is_symlink() || !meta.is_dir() || !can_move {
+            continue;
+        }
+        if !can_merge_dir(&link, &target) {
             eprintln!(
-                "[harness] could not link {} into {}: {error}",
-                target.display(),
-                profile.display()
+                "[harness] kept {} separate: it has entries that already exist in {}",
+                link.display(),
+                target.display()
             );
+            continue;
+        }
+        match merge_dir(&link, &target).and_then(|_| std::fs::remove_dir(&link)) {
+            Ok(()) => link_dir(&target, &link),
+            Err(error) => eprintln!(
+                "[harness] could not move {} into {}: {error}",
+                link.display(),
+                target.display()
+            ),
         }
     }
+    history_is_shared(shared, profile)
+}
+
+fn history_is_shared(shared: &Path, profile: &Path) -> bool {
+    match (
+        std::fs::canonicalize(shared.join("projects")),
+        std::fs::canonicalize(profile.join("projects")),
+    ) {
+        (Ok(shared), Ok(profile)) => shared == profile,
+        _ => false,
+    }
+}
+
+/// True when every entry under `from` either is missing from `to` or is a
+/// directory that merges the same way, so a move replaces nothing.
+fn can_merge_dir(from: &Path, to: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(from) else {
+        return false;
+    };
+    entries.flatten().all(|entry| {
+        let dest = to.join(entry.file_name());
+        match std::fs::symlink_metadata(&dest) {
+            Err(error) => error.kind() == std::io::ErrorKind::NotFound,
+            Ok(meta) => {
+                meta.is_dir()
+                    && entry.file_type().is_ok_and(|kind| kind.is_dir())
+                    && can_merge_dir(&entry.path(), &dest)
+            }
+        }
+    })
+}
+
+/// Move every entry of `from` into `to`, descending into directories both
+/// sides have. Emptied source directories are removed.
+fn merge_dir(from: &Path, to: &Path) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let src = entry.path();
+        let dest = to.join(entry.file_name());
+        if std::fs::symlink_metadata(&dest).is_ok() {
+            merge_dir(&src, &dest)?;
+            std::fs::remove_dir(&src)?;
+        } else {
+            std::fs::rename(&src, &dest)?;
+        }
+    }
+    Ok(())
+}
+
+fn link_dir(target: &Path, link: &Path) {
+    #[cfg(unix)]
+    let linked = std::os::unix::fs::symlink(target, link);
+    #[cfg(windows)]
+    let linked = std::os::windows::fs::symlink_dir(target, link);
+    if let Err(error) = linked {
+        eprintln!(
+            "[harness] could not link {} to {}: {error}",
+            link.display(),
+            target.display()
+        );
+    }
+}
+
+/// Whether a conversation started on one Claude account can be resumed on
+/// another: true when this account reads its transcripts from the default
+/// profile. Sets the link up if it is missing.
+#[tauri::command(async)]
+pub fn provider_account_shares_history(
+    app: AppHandle,
+    host: State<'_, HarnessHost>,
+    provider: String,
+    account_id: String,
+) -> Result<bool, String> {
+    if provider != "claude" {
+        return Ok(false);
+    }
+    let Some(profile) = provider_account_dir(&app, &provider, Some(&account_id))? else {
+        return Ok(true);
+    };
+    let Some(shared) = default_claude_config_dir() else {
+        return Ok(false);
+    };
+    Ok(share_claude_history(
+        &shared,
+        &profile,
+        !host.account_in_use(&provider, &account_id),
+    ))
 }
 
 /// A child that stops draining stdin can block `write_all` for minutes, so the
@@ -3862,6 +4008,90 @@ mod claude_profile_link_tests {
         let home_default = dirs_home().map(|home| PathBuf::from(home).join(".claude"));
         assert_eq!(claude_config_dir_from(Some("".into())), home_default);
         assert_eq!(claude_config_dir_from(None), home_default);
+    }
+
+    #[test]
+    fn links_a_fresh_profile_to_the_shared_history() {
+        let shared = temp_dir("history-shared");
+        let profile = temp_dir("history-profile");
+
+        assert!(share_claude_history(&shared, &profile, true));
+
+        for name in CLAUDE_SHARED_HISTORY_DIRS {
+            assert_eq!(
+                std::fs::read_link(profile.join(name)).unwrap(),
+                shared.join(name)
+            );
+        }
+        // A transcript written through one account is visible to the other.
+        std::fs::create_dir_all(profile.join("projects/-repo")).unwrap();
+        std::fs::write(profile.join("projects/-repo/abc.jsonl"), "{}\n").unwrap();
+        assert!(shared.join("projects/-repo/abc.jsonl").is_file());
+        assert!(share_claude_history(&shared, &profile, true));
+
+        std::fs::remove_dir_all(shared).unwrap();
+        std::fs::remove_dir_all(profile).unwrap();
+    }
+
+    #[test]
+    fn moves_existing_profile_history_into_the_shared_dir() {
+        let shared = temp_dir("history-move-shared");
+        let profile = temp_dir("history-move-profile");
+        std::fs::create_dir_all(shared.join("projects/-repo")).unwrap();
+        std::fs::write(shared.join("projects/-repo/old.jsonl"), "default\n").unwrap();
+        std::fs::create_dir_all(profile.join("projects/-repo/new/subagents")).unwrap();
+        std::fs::write(profile.join("projects/-repo/new.jsonl"), "work\n").unwrap();
+        std::fs::write(profile.join("projects/-repo/new/subagents/a.jsonl"), "a\n").unwrap();
+        std::fs::create_dir_all(profile.join("projects/-other")).unwrap();
+        std::fs::write(profile.join("projects/-other/x.jsonl"), "x\n").unwrap();
+
+        assert!(share_claude_history(&shared, &profile, true));
+
+        assert_eq!(
+            std::fs::read_to_string(shared.join("projects/-repo/new.jsonl")).unwrap(),
+            "work\n"
+        );
+        assert!(shared.join("projects/-repo/new/subagents/a.jsonl").is_file());
+        assert!(shared.join("projects/-other/x.jsonl").is_file());
+        assert!(shared.join("projects/-repo/old.jsonl").is_file());
+        assert!(std::fs::symlink_metadata(profile.join("projects"))
+            .unwrap()
+            .file_type()
+            .is_symlink());
+
+        std::fs::remove_dir_all(shared).unwrap();
+        std::fs::remove_dir_all(profile).unwrap();
+    }
+
+    #[test]
+    fn keeps_profile_history_when_a_move_would_replace_a_file_or_it_is_in_use() {
+        let shared = temp_dir("history-keep-shared");
+        let profile = temp_dir("history-keep-profile");
+        std::fs::create_dir_all(shared.join("projects/-repo")).unwrap();
+        std::fs::write(shared.join("projects/-repo/same.jsonl"), "default\n").unwrap();
+        std::fs::create_dir_all(profile.join("projects/-repo")).unwrap();
+        std::fs::write(profile.join("projects/-repo/same.jsonl"), "work\n").unwrap();
+        std::fs::write(profile.join("projects/-repo/other.jsonl"), "other\n").unwrap();
+
+        assert!(!share_claude_history(&shared, &profile, true));
+        // Nothing moved, nothing replaced.
+        assert_eq!(
+            std::fs::read_to_string(shared.join("projects/-repo/same.jsonl")).unwrap(),
+            "default\n"
+        );
+        assert!(profile.join("projects/-repo/other.jsonl").is_file());
+        assert!(!shared.join("projects/-repo/other.jsonl").exists());
+
+        std::fs::remove_file(profile.join("projects/-repo/same.jsonl")).unwrap();
+        // A live process on the account blocks the move too.
+        assert!(!share_claude_history(&shared, &profile, false));
+        assert!(profile.join("projects/-repo/other.jsonl").is_file());
+
+        assert!(share_claude_history(&shared, &profile, true));
+        assert!(shared.join("projects/-repo/other.jsonl").is_file());
+
+        std::fs::remove_dir_all(shared).unwrap();
+        std::fs::remove_dir_all(profile).unwrap();
     }
 
     #[test]

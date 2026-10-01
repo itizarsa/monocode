@@ -448,6 +448,7 @@ pub fn run() {
             harness_updates::harness_update_check_claim,
             harness_updates::harness_update,
             harness::provider_account_remove,
+            harness::provider_account_shares_history,
             account_identity::provider_account_identity,
             pi_usage::fetch_pi_usage,
             rate_limits::fetch_claude_usage,

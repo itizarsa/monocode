@@ -1,5 +1,6 @@
 import { nativeModelId } from "../../../../features/sessions/model/models";
 import { sameProviderAccountId } from "../../../../features/providers/model/providerAccounts";
+import { providerAccountsShareHistory } from "../../../../features/providers/model/providerAccountCredentials";
 import type {
   RuntimeMode,
   TaskListItem,
@@ -443,15 +444,18 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
   }
 
   const resume = resumeByThread.get(input.sessionId);
+  // A conversation follows an account switch when both profiles read the
+  // same transcript store; otherwise the new account starts fresh.
   const canResume =
     resume != null &&
     resume.cwd === input.cwd &&
-    sameProviderAccountId(resume.providerAccountId, input.providerAccountId);
-  if (
-    resume &&
-    (resume.cwd !== input.cwd ||
-      !sameProviderAccountId(resume.providerAccountId, input.providerAccountId))
-  ) {
+    (sameProviderAccountId(resume.providerAccountId, input.providerAccountId) ||
+      (await providerAccountsShareHistory(
+        "claude",
+        resume.providerAccountId,
+        input.providerAccountId,
+      )));
+  if (resume && !canResume) {
     resumeByThread.delete(input.sessionId);
   }
   const { path } = await resolveClaudeBinaryImpl();

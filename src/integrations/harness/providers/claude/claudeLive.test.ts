@@ -34,6 +34,11 @@ vi.mock("../../core/child", () => ({
   writeChild,
 }));
 
+let accountsShareHistory = false;
+vi.mock("../../../../features/providers/model/providerAccountCredentials", () => ({
+  providerAccountsShareHistory: async () => accountsShareHistory,
+}));
+
 const {
   bindClaudeSession,
   cancelClaudeTurn,
@@ -920,6 +925,24 @@ describe("claude legacy account resume", () => {
     expect(spawned[0]).not.toContain("--session-id");
     emit({ type: "result", subtype: "success", session_id: "legacy-session" });
     await turn;
+  });
+
+  it("resumes on another account when both share the transcript store", async () => {
+    accountsShareHistory = true;
+    try {
+      bindClaudeSession("s1", "limited-session", "/repo", "account-work");
+      const { turn } = await startTurn("s1", {
+        providerAccountId: "account-home",
+      });
+      expect(spawned[0]).toEqual(
+        expect.arrayContaining(["--resume", "limited-session"]),
+      );
+      expect(spawned[0]).not.toContain("--session-id");
+      emit({ type: "result", subtype: "success", session_id: "limited-session" });
+      await turn;
+    } finally {
+      accountsShareHistory = false;
+    }
   });
 
   it("does not resume a legacy default thread under a named account", async () => {
