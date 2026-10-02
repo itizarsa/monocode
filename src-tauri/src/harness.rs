@@ -1163,13 +1163,12 @@ fn share_claude_history(shared: &Path, profile: &Path, can_move: bool) -> bool {
             );
             continue;
         }
-        match merge_dir(&link, &target).and_then(|_| std::fs::remove_dir(&link)) {
-            Ok(()) => link_dir(&target, &link),
-            Err(error) => eprintln!(
-                "[harness] could not move {} into {}: {error}",
+        if let Err(error) = move_history_dir(&link, &target) {
+            eprintln!(
+                "[harness] kept {} separate: could not move it into {}: {error}",
                 link.display(),
                 target.display()
-            ),
+            );
         }
     }
     history_is_shared(shared, profile)
@@ -1204,29 +1203,140 @@ fn can_merge_dir(from: &Path, to: &Path) -> bool {
     })
 }
 
+/// Move a profile's history dir into the shared one and link it back. Nothing
+/// moves until a link is known to work there, and a failure partway puts every
+/// moved entry back, so the profile never loses sight of a transcript.
+fn move_history_dir(dir: &Path, shared: &Path) -> std::io::Result<()> {
+    // Windows refuses symlinks without Developer Mode or admin rights; find
+    // out before anything leaves the profile.
+    let probe = dir.with_file_name(format!(
+        ".{}.monocode-link-probe",
+        dir.file_name().unwrap_or_default().to_string_lossy()
+    ));
+    let _ = remove_link(&probe);
+    make_link(shared, &probe)?;
+    remove_link(&probe)?;
+
+    let mut moved = Vec::new();
+    let result = merge_dir(dir, shared, &mut moved)
+        .and_then(|_| remove_empty_dirs(dir))
+        .and_then(|_| make_link(shared, dir));
+    if let Err(error) = result {
+        undo_moves(dir, &moved);
+        return Err(error);
+    }
+    Ok(())
+}
+
 /// Move every entry of `from` into `to`, descending into directories both
-/// sides have. Emptied source directories are removed.
-fn merge_dir(from: &Path, to: &Path) -> std::io::Result<()> {
+/// sides have, and record each move so it can be undone.
+fn merge_dir(from: &Path, to: &Path, moved: &mut Vec<(PathBuf, PathBuf)>) -> std::io::Result<()> {
     for entry in std::fs::read_dir(from)? {
         let entry = entry?;
         let src = entry.path();
         let dest = to.join(entry.file_name());
         if std::fs::symlink_metadata(&dest).is_ok() {
-            merge_dir(&src, &dest)?;
-            std::fs::remove_dir(&src)?;
+            merge_dir(&src, &dest, moved)?;
         } else {
-            std::fs::rename(&src, &dest)?;
+            move_entry(&src, &dest)?;
+            moved.push((src, dest));
         }
     }
     Ok(())
 }
 
-fn link_dir(target: &Path, link: &Path) {
+/// Put moved entries back, newest first, recreating the folders a merge
+/// emptied. Best effort: whatever cannot return is logged where it sits.
+fn undo_moves(dir: &Path, moved: &[(PathBuf, PathBuf)]) {
+    if std::fs::symlink_metadata(dir).is_ok_and(|meta| meta.file_type().is_symlink()) {
+        let _ = remove_link(dir);
+    }
+    let _ = std::fs::create_dir_all(dir);
+    for (src, dest) in moved.iter().rev() {
+        let restored = src
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|_| move_entry(dest, src));
+        if let Err(error) = restored {
+            eprintln!(
+                "[harness] could not move {} back to {}: {error}",
+                dest.display(),
+                src.display()
+            );
+        }
+    }
+}
+
+/// Rename, or copy then delete when the two paths are on different drives.
+fn move_entry(src: &Path, dest: &Path) -> std::io::Result<()> {
+    match std::fs::rename(src, dest) {
+        Err(error) if error.kind() == std::io::ErrorKind::CrossesDevices => {
+            if let Err(error) = copy_entry(src, dest) {
+                let _ = remove_entry(dest);
+                return Err(error);
+            }
+            remove_entry(src)
+        }
+        other => other,
+    }
+}
+
+fn copy_entry(src: &Path, dest: &Path) -> std::io::Result<()> {
+    let meta = std::fs::symlink_metadata(src)?;
+    if meta.file_type().is_symlink() {
+        make_link(&std::fs::read_link(src)?, dest)
+    } else if meta.is_dir() {
+        std::fs::create_dir(dest)?;
+        for entry in std::fs::read_dir(src)? {
+            let entry = entry?;
+            copy_entry(&entry.path(), &dest.join(entry.file_name()))?;
+        }
+        Ok(())
+    } else {
+        std::fs::copy(src, dest).map(|_| ())
+    }
+}
+
+fn remove_entry(path: &Path) -> std::io::Result<()> {
+    let meta = std::fs::symlink_metadata(path)?;
+    if meta.file_type().is_symlink() {
+        remove_link(path)
+    } else if meta.is_dir() {
+        std::fs::remove_dir_all(path)
+    } else {
+        std::fs::remove_file(path)
+    }
+}
+
+/// Remove `dir` and the folders under it that a merge emptied. Fails, leaving
+/// the rest in place, when anything else is still inside.
+fn remove_empty_dirs(dir: &Path) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() {
+            remove_empty_dirs(&entry.path())?;
+        }
+    }
+    std::fs::remove_dir(dir)
+}
+
+fn make_link(target: &Path, link: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
-    let linked = std::os::unix::fs::symlink(target, link);
+    return std::os::unix::fs::symlink(target, link);
     #[cfg(windows)]
-    let linked = std::os::windows::fs::symlink_dir(target, link);
-    if let Err(error) = linked {
+    return std::os::windows::fs::symlink_dir(target, link);
+}
+
+/// A Windows directory symlink is removed as a directory, a Unix one as a file.
+fn remove_link(link: &Path) -> std::io::Result<()> {
+    #[cfg(windows)]
+    return std::fs::remove_dir(link);
+    #[cfg(not(windows))]
+    return std::fs::remove_file(link);
+}
+
+fn link_dir(target: &Path, link: &Path) {
+    if let Err(error) = make_link(target, link) {
         eprintln!(
             "[harness] could not link {} to {}: {error}",
             link.display(),
@@ -4091,6 +4201,63 @@ mod claude_profile_link_tests {
 
         assert!(share_claude_history(&shared, &profile, true));
         assert!(shared.join("projects/-repo/other.jsonl").is_file());
+
+        std::fs::remove_dir_all(shared).unwrap();
+        std::fs::remove_dir_all(profile).unwrap();
+    }
+
+    #[test]
+    fn moves_nothing_when_the_profile_cannot_hold_a_link() {
+        let shared = temp_dir("history-nolink-shared");
+        let profile = temp_dir("history-nolink-profile");
+        std::fs::create_dir_all(profile.join("projects/-repo")).unwrap();
+        std::fs::write(profile.join("projects/-repo/a.jsonl"), "a\n").unwrap();
+        // Something the probe cannot replace stands in for a filesystem that
+        // refuses symlinks, like Windows without Developer Mode.
+        std::fs::create_dir_all(profile.join(".projects.monocode-link-probe/x")).unwrap();
+
+        assert!(!share_claude_history(&shared, &profile, true));
+        assert!(profile.join("projects/-repo/a.jsonl").is_file());
+        assert!(!shared.join("projects/-repo").exists());
+
+        std::fs::remove_dir_all(shared).unwrap();
+        std::fs::remove_dir_all(profile).unwrap();
+    }
+
+    #[test]
+    fn a_failed_move_puts_every_entry_back() {
+        let shared = temp_dir("history-undo-shared");
+        let profile = temp_dir("history-undo-profile");
+        let dir = profile.join("projects");
+        std::fs::create_dir_all(dir.join("-repo/sub")).unwrap();
+        std::fs::write(dir.join("-repo/a.jsonl"), "a\n").unwrap();
+        std::fs::write(dir.join("-repo/sub/s.jsonl"), "s\n").unwrap();
+        std::fs::write(dir.join("-repo/z.jsonl"), "z\n").unwrap();
+        std::fs::create_dir_all(dir.join("-other")).unwrap();
+        std::fs::write(dir.join("-other/o.jsonl"), "o\n").unwrap();
+        // A file the shared side has as a folder fails the merge partway.
+        let target = shared.join("projects");
+        std::fs::create_dir_all(target.join("-repo/z.jsonl/inner")).unwrap();
+        std::fs::create_dir_all(target.join("-other")).unwrap();
+
+        assert!(move_history_dir(&dir, &target).is_err());
+
+        assert!(!std::fs::symlink_metadata(&dir)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        for file in [
+            "-repo/a.jsonl",
+            "-repo/sub/s.jsonl",
+            "-repo/z.jsonl",
+            "-other/o.jsonl",
+        ] {
+            assert!(dir.join(file).is_file(), "{file} went missing");
+            assert!(
+                !target.join(file).is_file(),
+                "{file} stayed in the shared dir"
+            );
+        }
 
         std::fs::remove_dir_all(shared).unwrap();
         std::fs::remove_dir_all(profile).unwrap();
