@@ -2249,12 +2249,25 @@ function Workspace({
 
       // When both accounts read one transcript store, the next message
       // resumes this conversation on the selected account.
+      // The check can move history on disk; a turn sent meanwhile runs on
+      // the current account, so only switch when the session is still idle
+      // on it.
       if (
         !active.busy &&
         (await providerAccountsShareHistory(provider, currentId, accountId))
       ) {
-        switchInPlace();
-        return;
+        const latest = sessionsRef.current.find(
+          (session) => session.id === active.id,
+        );
+        if (
+          latest &&
+          !latest.busy &&
+          (latest.providerAccountId ?? DEFAULT_PROVIDER_ACCOUNT_ID) ===
+            currentId
+        ) {
+          switchInPlace();
+          return;
+        }
       }
 
       // Otherwise provider thread ids are account-owned. Keep the current

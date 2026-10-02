@@ -517,7 +517,7 @@ function ProviderAccountPicker({
       </div>
       <p className="mt-1 px-1 text-[10px] leading-4 text-content/40">
         {accounts[0]?.provider === "claude"
-          ? "Switching moves this conversation to the selected account."
+          ? "Switching continues an idle conversation on the selected account when their history is shared. Otherwise it opens a new one."
           : "Each conversation stays pinned to the account that started it."}
       </p>
       <div
