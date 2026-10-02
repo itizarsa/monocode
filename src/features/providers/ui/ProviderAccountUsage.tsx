@@ -98,6 +98,7 @@ export function AccountUsageMeters({
   limits: ProviderRateLimits | undefined;
   now: number;
 }) {
+  const showRemaining = useShowRemainingUsage();
   const windows = meterWindows(limits);
 
   if (windows.length === 0) {
@@ -126,6 +127,7 @@ export function AccountUsageMeters({
           title={entry.title}
           window={entry.window}
           now={now}
+          showRemaining={showRemaining}
         />
       ))}
     </div>
@@ -137,13 +139,15 @@ export function UsageMeter({
   window,
   now,
   className = "w-36",
+  showRemaining = false,
 }: {
   title: string;
   window: RateLimitWindow;
   now: number;
   className?: string;
+  /** Fill with what is left instead of what is used (Settings only). */
+  showRemaining?: boolean;
 }) {
-  const showRemaining = useShowRemainingUsage();
   const pct = clampUsedPercent(window.usedPercent);
   const remaining = 100 - pct;
   const shown = showRemaining ? remaining : pct;

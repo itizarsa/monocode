@@ -3262,7 +3262,7 @@ function UsageDisplaySettings() {
       <Row
         id="show-remaining-usage"
         label="Show remaining usage"
-        description="Fill usage meters with what is left in each limit instead of what has been used."
+        description="Fill the usage meters on this page with what is left in each limit instead of what has been used. The footer chip always shows what has been used."
       >
         <Toggle
           label="Show remaining usage"

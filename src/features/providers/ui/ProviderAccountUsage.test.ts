@@ -2,7 +2,7 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { UsageMeter } from "./ProviderAccountUsage";
+import { AccountUsageMeters, UsageMeter } from "./ProviderAccountUsage";
 
 let container: HTMLDivElement;
 let root: Root;
@@ -25,13 +25,20 @@ it("flips the meter when another window turns on remaining usage", async () => {
   const now = Date.now();
   await act(async () =>
     root.render(
-      createElement(UsageMeter, {
-        title: "5h",
+      createElement(AccountUsageMeters, {
         now,
-        window: {
-          usedPercent: 23,
-          windowMinutes: 300,
-          resetsAt: now + 3_600_000,
+        limits: {
+          provider: "claude",
+          session: {
+            usedPercent: 23,
+            windowMinutes: 300,
+            resetsAt: now + 3_600_000,
+          },
+          weekly: null,
+          monthly: null,
+          resetCredits: null,
+          updatedAt: now,
+          status: "ready",
         },
       }),
     ),
@@ -54,4 +61,25 @@ it("flips the meter when another window turns on remaining usage", async () => {
     "width: 77%;",
   );
   expect(container.textContent).toContain("77% left");
+});
+
+it("keeps a bare meter on used capacity when remaining usage is on", async () => {
+  localStorage.setItem("monocode.showRemainingUsage", "1");
+  const now = Date.now();
+  await act(async () =>
+    root.render(
+      createElement(UsageMeter, {
+        title: "5h",
+        now,
+        window: {
+          usedPercent: 23,
+          windowMinutes: 300,
+          resetsAt: now + 3_600_000,
+        },
+      }),
+    ),
+  );
+  const bar = container.querySelector('[role="progressbar"]');
+  expect(bar?.getAttribute("aria-label")).toBe("5h limit used");
+  expect(bar?.querySelector("span")?.getAttribute("style")).toBe("width: 23%;");
 });
