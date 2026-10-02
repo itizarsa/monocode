@@ -643,6 +643,12 @@ export class HostEngine {
               "This request belongs to a finished or replaced turn",
             );
           if (command.type === "cancel") {
+            // Stop means stop: an armed resume-at-reset must not start a
+            // turn later on the user's behalf.
+            value = {
+              ...value,
+              session: { ...value.session, usageLimit: undefined },
+            };
             effect = () => {
               const active = this.running.get(command.sessionId);
               if (active) active.cancelled = true;
@@ -831,7 +837,12 @@ export class HostEngine {
               : error;
           this.save(
             this.settled(
-              latest,
+              active.cancelled
+                ? {
+                    ...latest,
+                    session: { ...latest.session, usageLimit: undefined },
+                  }
+                : latest,
               this.closing || active.persistenceFailed ? "interrupted" : "idle",
               message,
             ),

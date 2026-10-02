@@ -7,6 +7,10 @@ import type { HostProvider } from "./providers";
 import { HostEngine, parseCommand } from "./engine";
 import { HostStore } from "./store";
 import { readAttachmentChunk, writeAttachmentChunk } from "./attachments";
+import {
+  USAGE_LIMIT_RESUME_GRACE_MS,
+  usageLimitResumeDue,
+} from "../src/features/sessions/model/usageLimit";
 
 const cleanups: Array<() => Promise<void> | void> = [];
 afterEach(async () => {
@@ -589,6 +593,37 @@ describe("headless session ownership", () => {
     ).toThrow("already resolved");
     expect(provider.approve).toHaveBeenCalledTimes(1);
     expect(provider.approve).toHaveBeenCalledWith(id, 7, "allow");
+  });
+
+  it("disarms resume-at-reset when the user stops the turn", async () => {
+    const { engine, store, turns, id } = setup();
+    engine.command({ type: "send", commandId: "send", sessionId: id, text: "Work" });
+    await vi.waitFor(() => expect(turns).toHaveLength(1));
+    const running = store.session(id);
+    store.save(
+      {
+        ...running,
+        revision: running.revision + 1,
+        session: {
+          ...running.session,
+          usageLimit: { resetsAt: 10_000, resumeAtReset: true },
+        },
+      },
+      { type: "test" },
+    );
+    engine.command({
+      type: "cancel",
+      commandId: "stop",
+      sessionId: id,
+      runId: running.runId,
+    });
+    expect(store.session(id).session.usageLimit).toBeUndefined();
+    await vi.waitFor(() => expect(store.session(id).status).toBe("idle"));
+    const settled = store.session(id).session;
+    expect(settled.usageLimit).toBeUndefined();
+    expect(
+      usageLimitResumeDue(settled, 10_000 + USAGE_LIMIT_RESUME_GRACE_MS),
+    ).toBe(false);
   });
 
   it("stores pending questions and rejects a second device's stale answer", async () => {
