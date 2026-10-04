@@ -3536,7 +3536,7 @@ function Workspace({
     [activeTabId, inboxAskPortal],
   );
 
-  const [requestDiffOpen] = useState(() =>
+  const [diffOpenRequests] = useState(() =>
     createDiffOpenRequests(resolveOpenablePath),
   );
   const onOpenDiff = useCallback(
@@ -3591,9 +3591,9 @@ function Workspace({
       // (a transcript link, a session file) need the project file index, and
       // waiting on it here held the click until the whole project was listed.
       // A lookup still pending when the next click lands is dropped.
-      requestDiffOpen(diffCwd, path, exact, open);
+      diffOpenRequests.open(diffCwd, path, exact, open);
     },
-    [activeTabId, requestDiffOpen],
+    [activeTabId, diffOpenRequests],
   );
 
   const onOpenWorkingTreeDiff = useCallback(
@@ -3604,6 +3604,7 @@ function Workspace({
 
   /** Stack one section's working-tree changes in one review, whatever the diff-view setting. */
   const onOpenAllChanges = useCallback((kind: GitFileDiffKind) => {
+    diffOpenRequests.cancel();
     setTabs((prev) =>
       prev.map((tab) =>
         tab.id === activeTabId
@@ -3618,10 +3619,11 @@ function Workspace({
       ),
     );
     setComposerFocused(false);
-  }, [activeTabId]);
+  }, [activeTabId, diffOpenRequests]);
 
   const onOpenCommit = useCallback(
     (commit: GitHistoryCommit, pin?: boolean) => {
+      diffOpenRequests.cancel();
       setTabs((prev) =>
         prev.map((tab) =>
           tab.id === activeTabId
@@ -3641,7 +3643,7 @@ function Workspace({
       );
       setComposerFocused(false);
     },
-    [activeTabId],
+    [activeTabId, diffOpenRequests],
   );
 
   const onShowSourceControl = useCallback(() => {
