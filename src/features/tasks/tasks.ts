@@ -132,8 +132,10 @@ export function scopePrefix(scope: TaskScope): string {
   if (scope.kind === "global") return "TASK";
   const letters = projectName(scope.cwd)
     .toUpperCase()
-    .replace(/[^A-Z0-9]/g, "");
-  return letters.slice(0, 4) || "PROJ";
+    .replace(/[^A-Z0-9]/g, "")
+    .slice(0, 4);
+  // A project must not mint keys that read as global ones.
+  return letters && letters !== "TASK" ? letters : "PROJ";
 }
 
 export function listTasks(scope?: TaskScope): Task[] {
@@ -146,12 +148,21 @@ export function listTasks(scope?: TaskScope): Task[] {
   );
 }
 
-export function getTask(idOrKey: string): Task | null {
+/**
+ * Keys are unique only within a scope, so callers acting for one project pass
+ * the scopes they may touch; a key from another project then stays hidden.
+ */
+export function getTask(
+  idOrKey: string,
+  within?: readonly TaskScope[],
+): Task | null {
   const needle = idOrKey.trim();
   return (
     read().tasks.find(
       (task) =>
-        task.id === needle || task.key.toLowerCase() === needle.toLowerCase(),
+        (task.id === needle ||
+          task.key.toLowerCase() === needle.toLowerCase()) &&
+        (!within || within.some((scope) => sameScope(taskScope(task), scope))),
     ) ?? null
   );
 }

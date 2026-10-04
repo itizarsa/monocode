@@ -12,6 +12,7 @@ import {
 import type { Note } from "../../notes";
 import type { Worktree } from "../../source-control/model/worktrees";
 import { handleAgentApp, notePreview, type AgentAppHost } from "./agentApp";
+import { createTask, getTask, scopePrefix } from "../../tasks/tasks";
 
 vi.mock("../../../integrations/harness/core/availability", () => ({
   isHarnessAvailable: (id: string) => id === "codex",
@@ -895,7 +896,13 @@ describe("agent app tasks", () => {
       ),
     ).toMatchObject({ deleted: true, key: "PROJ-1" });
     await expect(
-      handleAgentApp(source, "delete-2", "tasks.delete", { id: "PROJ-1" }, host),
+      handleAgentApp(
+        source,
+        "delete-2",
+        "tasks.delete",
+        { id: "PROJ-1" },
+        host,
+      ),
     ).rejects.toThrow("Task was not found");
     const next = await handleAgentApp(
       source,
@@ -905,5 +912,47 @@ describe("agent app tasks", () => {
       host,
     );
     expect(next).toMatchObject({ key: "PROJ-2" });
+  });
+
+  it("acts only on tasks in its own project or the global list", async () => {
+    const { source, host } = fixture();
+    const elsewhere = createTask(
+      { kind: "project", cwd: "/work/projector" },
+      { title: "Someone else's task" },
+    );
+    expect(elsewhere.key).toBe("PROJ-1");
+    await handleAgentApp(
+      source,
+      "task-1",
+      "tasks.write",
+      { title: "Our task" },
+      host,
+    );
+    expect(
+      await handleAgentApp(
+        source,
+        "delete-1",
+        "tasks.delete",
+        { id: "PROJ-1" },
+        host,
+      ),
+    ).toMatchObject({ deleted: true, id: "app-lead-task-1" });
+    for (const [action, input] of [
+      ["tasks.read", { id: "PROJ-1" }],
+      ["tasks.read", { id: elsewhere.id }],
+      ["tasks.write", { id: elsewhere.id, status: "done" }],
+      ["tasks.comment", { id: elsewhere.id, body: "Hi" }],
+      ["tasks.delete", { id: elsewhere.id }],
+    ] as const)
+      await expect(
+        handleAgentApp(source, "other", action, input, host),
+      ).rejects.toThrow("Task was not found");
+    expect(getTask(elsewhere.id)).toMatchObject({ status: "todo" });
+  });
+
+  it("never gives a project the global TASK prefix", () => {
+    expect(scopePrefix({ kind: "project", cwd: "/src/tasks" })).toBe("PROJ");
+    expect(scopePrefix({ kind: "project", cwd: "/src/monocode" })).toBe("MONO");
+    expect(scopePrefix({ kind: "global" })).toBe("TASK");
   });
 });

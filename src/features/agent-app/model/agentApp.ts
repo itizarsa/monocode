@@ -190,6 +190,16 @@ function taskScopeFor(source: Session, value: unknown): TaskScope {
   throw new Error('scope must be "project" or "global"');
 }
 
+/** An agent sees global tasks and those of its own project, never others. */
+function visibleTask(source: Session, id: unknown): Task {
+  const scopes: TaskScope[] = [{ kind: "global" }];
+  if (looksLikeProject(source.cwd))
+    scopes.push({ kind: "project", cwd: source.cwd });
+  const task = getTask(requiredString(id, "id", 256), scopes);
+  if (!task) throw new Error("Task was not found");
+  return task;
+}
+
 function taskFields(input: Record<string, unknown>): TaskInput {
   const out: TaskInput = {};
   if (input.title !== undefined)
@@ -636,11 +646,8 @@ export async function handleAgentApp(
           .map(taskSummary),
       };
     }
-    case "tasks.read": {
-      const task = getTask(requiredString(input.id, "id", 256));
-      if (!task) throw new Error("Task was not found");
-      return task;
-    }
+    case "tasks.read":
+      return visibleTask(source, input.id);
     case "tasks.write": {
       const id = optionalString(input.id, "id", 256);
       const patch = taskFields(input);
@@ -651,8 +658,7 @@ export async function handleAgentApp(
           throw new Error(
             "Supply title, description, status, priority or labels to update a task",
           );
-        const current = getTask(id);
-        if (!current) throw new Error("Task was not found");
+        const current = visibleTask(source, id);
         return updateTask(current.id, patch, { sessionId: source.id });
       }
       if (!patch.title) throw new Error("title is required to create a task");
@@ -668,8 +674,7 @@ export async function handleAgentApp(
       );
     }
     case "tasks.comment": {
-      const task = getTask(requiredString(input.id, "id", 256));
-      if (!task) throw new Error("Task was not found");
+      const task = visibleTask(source, input.id);
       if (typeof input.body !== "string")
         throw new Error("body must be a string");
       if (!/^[A-Za-z0-9_-]{1,128}$/.test(requestId))
@@ -681,8 +686,7 @@ export async function handleAgentApp(
       return { taskId: task.id, key: task.key, comment };
     }
     case "tasks.delete": {
-      const task = getTask(requiredString(input.id, "id", 256));
-      if (!task) throw new Error("Task was not found");
+      const task = visibleTask(source, input.id);
       deleteTask(task.id);
       return { deleted: true, id: task.id, key: task.key };
     }

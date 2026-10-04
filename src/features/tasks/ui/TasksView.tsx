@@ -77,7 +77,8 @@ type Props = {
 
 type Layout = "board" | "list";
 
-let rememberedScope: TaskScope | null = null;
+/** Kept per project, so Tasks opens on the project you are in. */
+let rememberedScope: { cwd: string; scope: TaskScope } | null = null;
 let rememberedLayout: Layout = "board";
 let rememberedCollapsed: TaskStatus[] = ["canceled"];
 
@@ -91,10 +92,12 @@ export function TasksView({
 }: Props) {
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
-  const [scope, setScope] = useState<TaskScope>(
-    () =>
-      rememberedScope ??
-      (looksLikeProject(cwd) ? { kind: "project", cwd } : { kind: "global" }),
+  const [scope, setScope] = useState<TaskScope>(() =>
+    rememberedScope && pathKey(rememberedScope.cwd) === pathKey(cwd)
+      ? rememberedScope.scope
+      : looksLikeProject(cwd)
+        ? { kind: "project", cwd }
+        : { kind: "global" },
   );
   const [layout, setLayout] = useState<Layout>(rememberedLayout);
   const [version, setVersion] = useState(0);
@@ -115,9 +118,10 @@ export function TasksView({
     setDeleteAsked(id);
   }, []);
 
+  const [openedFrom] = useState(cwd);
   useEffect(() => {
-    rememberedScope = scope;
-  }, [scope]);
+    rememberedScope = { cwd: openedFrom, scope };
+  }, [openedFrom, scope]);
   useEffect(() => {
     rememberedLayout = layout;
   }, [layout]);
@@ -699,6 +703,10 @@ function Board({
   useEffect(() => {
     rememberedCollapsed = collapsed;
   }, [collapsed]);
+  useEffect(() => {
+    if (composing)
+      setCollapsed((current) => current.filter((item) => item !== composing));
+  }, [composing]);
   const lock = useLockOverscroll<HTMLDivElement>();
   return (
     <div
@@ -1023,6 +1031,29 @@ function ListLayout({
 
 /* ---------- Detail ---------- */
 
+/**
+ * Shows the stored value until the field is focused, then the user's draft.
+ * `end` returns the draft only when the user changed it, so blurring a field
+ * never writes back text that an agent has since replaced.
+ */
+function useFieldDraft(stored: string) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const base = useRef(stored);
+  return {
+    value: draft ?? stored,
+    begin: () => {
+      if (draft !== null) return;
+      base.current = stored;
+      setDraft(stored);
+    },
+    change: setDraft,
+    end: () => {
+      setDraft(null);
+      return draft !== null && draft !== base.current ? draft : null;
+    },
+  };
+}
+
 function TaskDetail({
   task,
   marks,
@@ -1050,9 +1081,9 @@ function TaskDetail({
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
   }, [confirmDelete, onConfirmDelete]);
-  const [title, setTitle] = useState(task.title);
-  const [description, setDescription] = useState(task.description);
-  const [editing, setEditing] = useState(!task.description);
+  const title = useFieldDraft(task.title);
+  const description = useFieldDraft(task.description);
+  const [editing, setEditing] = useState(false);
   const [labelDraft, setLabelDraft] = useState("");
   const lock = useLockOverscroll<HTMLDivElement>();
 
@@ -1132,11 +1163,17 @@ function TaskDetail({
         className="min-h-0 flex-1 overflow-y-auto overscroll-none p-4"
       >
         <textarea
-          value={title}
+          value={title.value}
           rows={1}
           aria-label="Task title"
-          onChange={(event) => setTitle(event.target.value.replace(/\n/g, " "))}
-          onBlur={() => title.trim() !== task.title && save({ title })}
+          onFocus={title.begin}
+          onChange={(event) =>
+            title.change(event.target.value.replace(/\n/g, " "))
+          }
+          onBlur={() => {
+            const next = title.end();
+            if (next?.trim()) save({ title: next });
+          }}
           className="field-sizing-content w-full resize-none bg-transparent text-[16px] font-semibold leading-snug text-content outline-none"
         />
         <dl className="mt-3 grid grid-cols-[84px_1fr] items-center gap-y-1.5 text-[12px]">
@@ -1218,7 +1255,7 @@ function TaskDetail({
             <span className="text-[11.5px] font-medium text-content/50">
               Description
             </span>
-            {!editing ? (
+            {!editing && task.description ? (
               <button
                 type="button"
                 onClick={() => setEditing(true)}
@@ -1228,16 +1265,18 @@ function TaskDetail({
               </button>
             ) : null}
           </div>
-          {editing ? (
+          {editing || !task.description ? (
             <textarea
-              autoFocus={!!task.description}
-              value={description}
+              autoFocus={editing}
+              value={description.value}
               placeholder="Add details in Markdown"
               aria-label="Task description"
-              onChange={(event) => setDescription(event.target.value)}
+              onFocus={description.begin}
+              onChange={(event) => description.change(event.target.value)}
               onBlur={() => {
-                if (description !== task.description) save({ description });
-                if (description.trim()) setEditing(false);
+                const next = description.end();
+                if (next !== null) save({ description: next });
+                setEditing(false);
               }}
               className="min-h-[140px] w-full resize-y rounded-md border border-stroke bg-transparent p-2 text-[12.5px] leading-relaxed text-content outline-none placeholder:text-content/35"
             />

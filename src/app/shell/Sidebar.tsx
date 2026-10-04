@@ -768,7 +768,8 @@ function SidebarComponent({
     !searchActive &&
     !inboxActive &&
     !notesActive &&
-    !automationsActive && !tasksActive &&
+    !automationsActive &&
+    !tasksActive &&
     !settingsOpen &&
     inProject;
   const sidebarVisible = open && sidebarAvailable;
